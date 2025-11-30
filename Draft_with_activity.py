@@ -177,7 +177,9 @@ class SmartVentilationEnv(gym.Env):
             return 1.0
         else:
             ratio = current / limit
-            return max(self.MAX_PENALTY_COMPONENT, -((ratio - 1.0) ** 2))
+            # penalty = -((ratio - 1.0) ** 2)
+            penalty = -((ratio - 1.0) * 10.0)
+            return max(self.MAX_PENALTY_COMPONENT, penalty)
 
     def _calculate_total_reward(self):
         R_voc = self._reward_func(self.voc, self.voc_safe)
