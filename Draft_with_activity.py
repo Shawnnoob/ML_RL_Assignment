@@ -384,7 +384,7 @@ def evaluate_model(model, env, label="Generic Model", print_step_logs=False):
 # =========================================================================
 # Main Block
 # =========================================================================
-
+'''
 if __name__ == '__main__':
     # 1. Setup Environment
     env = SmartVentilationEnv()
@@ -396,3 +396,92 @@ if __name__ == '__main__':
 
     # 3. Evaluate using our new function
     results_std = evaluate_model(model_std, env, label="Standard DQN", print_step_logs=True)
+'''
+# =========================================================================
+# 5. Comparing Strategies using ONLY DQN
+# =========================================================================
+
+if __name__ == '__main__':
+    env = SmartVentilationEnv()
+    TRAIN_STEPS = 144000
+
+    # -------------------------------------------------------
+    # Strategy A: Standard DQN (The "Smart" Agent)
+    # -------------------------------------------------------
+    # Starts random (1.0), decays to low randomness (0.05) to exploit learning.
+    print("--- Training Strategy A: Standard (Epsilon-Greedy) ---")
+    model_standard = DQN("MlpPolicy", env,
+                         exploration_fraction=0.5,
+                         exploration_initial_eps=1.0,
+                         exploration_final_eps=0.05,
+                         seed=42, verbose=0)
+    model_standard.learn(total_timesteps=TRAIN_STEPS)
+
+    # -------------------------------------------------------
+    # Strategy B: Random Exploration (The "Baseline")
+    # -------------------------------------------------------
+    # We configure DQN to NEVER stop exploring. Epsilon stays at 1.0.
+    print("--- Training Strategy B: Pure Random (Baseline) ---")
+    model_random = DQN("MlpPolicy", env,
+                       exploration_initial_eps=1.0,
+                       exploration_final_eps=1.0,  # 100% Random forever
+                       seed=42, verbose=0)
+    # We "train" it just to keep the code consistent,
+    # but it technically just gathers random data.
+    model_random.learn(total_timesteps=TRAIN_STEPS)
+
+
+    # -------------------------------------------------------
+    # Evaluation Function
+    # -------------------------------------------------------
+    def evaluate_strategy(model, env, label, force_random=False):
+        print(f"\n[EVALUATION] {label}...")
+        obs, _ = env.reset()
+        cumulative_reward = 0.0
+        tasvt_steps = 0
+        total_co2 = 0.0
+        total_pm = 0.0
+
+        for step in range(env.MAX_STEPS):
+            # CRITICAL: If force_random is True, we use deterministic=False
+            # This allows the model to use its internal epsilon (which is 1.0 for the random model)
+            if force_random:
+                action, _ = model.predict(obs, deterministic=False)
+            else:
+                action, _ = model.predict(obs, deterministic=True)  # Standard: Use best learned action
+
+            obs, reward, term, trunc, info = env.step(action.item())
+
+            cumulative_reward += reward
+            total_co2 += info['co2']
+            total_pm += info['pm']
+            if info['voc'] > env.voc_safe:
+                tasvt_steps += 1
+            if trunc: break
+
+        return {
+            "Reward": cumulative_reward,
+            "TASVT": tasvt_steps,
+            "Avg CO2": total_co2 / env.MAX_STEPS,
+            "Avg PM": total_pm / env.MAX_STEPS
+        }
+
+
+    # -------------------------------------------------------
+    # Compare
+    # -------------------------------------------------------
+    # 1. Evaluate Standard (Deterministic = True, uses learned policy)
+    stats_std = evaluate_strategy(model_standard, env, "Standard DQN", force_random=False)
+
+    # 2. Evaluate Random (Deterministic = False, uses epsilon=1.0)
+    stats_rnd = evaluate_strategy(model_random, env, "Random Strategy DQN", force_random=True)
+
+    # Print Results
+    print("\n" + "=" * 60)
+    print(f"{'Metric':<15} | {'Standard DQN':<15} | {'Random DQN':<15}")
+    print("-" * 60)
+    print(f"{'Reward':<15} | {stats_std['Reward']:<15.2f} | {stats_rnd['Reward']:<15.2f}")
+    print(f"{'TASVT Steps':<15} | {stats_std['TASVT']:<15} | {stats_rnd['TASVT']:<15}")
+    print(f"{'Avg CO2':<15} | {stats_std['Avg CO2']:<15.2f} | {stats_rnd['Avg CO2']:<15.2f}")
+    print(f"{'Avg PM':<15} | {stats_std['Avg PM']:<15.2f} | {stats_rnd['Avg PM']:<15.2f}")
+    print("=" * 60)
