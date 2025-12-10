@@ -177,8 +177,15 @@ class SmartVentilationEnv(gym.Env):
             return 1.0
         else:
             ratio = current / limit
-            # penalty = -((ratio - 1.0) ** 2)
-            penalty = -((ratio - 1.0) * 10.0)
+            # --- EXPONENTIAL PENALTY ---
+            # Steepness (k): Controls how fast the penalty grows.
+            # k=5.0 means at 50% overflow (1.5 ratio), penalty is ~ -11.0
+            steepness = 5.0
+
+            # We subtract 1.0 so that at ratio=1.0, the penalty is exactly 0.0
+            penalty = -(np.exp((ratio - 1.0) * steepness) - 1.0)
+
+            # Apply hard cap to prevent mathematical explosion
             return max(self.MAX_PENALTY_COMPONENT, penalty)
 
     def _calculate_total_reward(self):
