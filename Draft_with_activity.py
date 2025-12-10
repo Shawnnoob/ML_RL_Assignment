@@ -268,8 +268,10 @@ class SmartVentilationEnv(gym.Env):
         # Update activity logic (check schedule or continue cooking)
         self._update_activity()
 
+        # Extract scalar 'R_total', full dict is available if needed
         reward_details = self._calculate_total_reward()
         reward = reward_details["R_total"]
+
         observation = self._get_obs()
         terminated = False
         truncated = self.current_step >= self.MAX_STEPS
@@ -307,7 +309,12 @@ if __name__ == '__main__':
     print("\n--- Evaluation ---")
     test_env = SmartVentilationEnv()
     obs, _ = test_env.reset()
-    episode_reward = 0.0
+
+    # --- METRIC ACCUMULATORS ---
+    metric_cumulative_reward = 0.0
+    metric_tasvt_steps = 0  # Time Above Safe VOC Threshold
+    metric_total_co2 = 0.0  # For calculating Average CO2
+    metric_total_pm = 0.0  # For calculating Average PM2.5
 
     # Header for cleaner output
     print(f"{'Step':<10} | {'Activity':<8} | {'Fan':<5} | {'VOC':<8} | {'PM2.5':<8} | {'CO2':<8} | {'Reward':<6}")
@@ -316,16 +323,37 @@ if __name__ == '__main__':
     for step in range(test_env.MAX_STEPS):
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, term, trunc, info = test_env.step(action.item())
-        episode_reward += reward
 
-        # Print every hour OR when fan is ON OR when Cooking
+        # --- UPDATE METRICS ---
+        # 1. Cumulative Reward
+        metric_cumulative_reward += reward
+
+        # 2. TASVT (Count steps where VOC > Safe Limit)
+        if info['voc'] > test_env.voc_safe:
+            metric_tasvt_steps += 1
+
+        # 3. Accumulate for Averages
+        metric_total_co2 += info['co2']
+        metric_total_pm += info['pm']
+
+        # Print logic (Hourly or active cooking)
         should_print = (step % 60 == 0) or (info['activity'] != "none") or (test_env.fan_speed > 0)
-
         if should_print:
             print(f"{step:<10} | {info['activity']:<8} | {test_env.fan_speed:.2f}  | "
                   f"{info['voc']:<8.1f} | {info['pm']:<8.1f} | {info['co2']:<8.0f} | {reward:.2f}")
 
         if trunc: break
 
+    # --- FINAL CALCULATIONS ---
+    # Calculate averages by dividing total sum by total steps (T=1440)
+    avg_co2 = metric_total_co2 / test_env.MAX_STEPS
+    avg_pm = metric_total_pm / test_env.MAX_STEPS
+
     print("-" * 80)
-    print(f"Evaluation Finished. Total Cumulative Reward: {episode_reward:.2f}")
+    print("--- FINAL PERFORMANCE METRICS ---")
+    print(f"1. Cumulative Reward:               {metric_cumulative_reward:.2f}")
+    print(
+        f"2. TASVT (Unsafe VOC Steps):        {metric_tasvt_steps} steps ({(metric_tasvt_steps / test_env.MAX_STEPS) * 100:.1f}% of day)")
+    print(f"3. Average CO2 Concentration:       {avg_co2:.2f} ppm")
+    print(f"4. Average PM2.5 Concentration:     {avg_pm:.2f} µg/m³")
+    print("-" * 80)
