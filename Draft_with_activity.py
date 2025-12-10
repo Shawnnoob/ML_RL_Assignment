@@ -4,6 +4,9 @@ import gymnasium as gym
 from gymnasium.spaces import Box, Discrete
 from stable_baselines3 import DQN
 
+# =========================================================================
+# Environment
+# =========================================================================
 
 class SmartVentilationEnv(gym.Env):
     MAX_STEPS = 1440
@@ -180,7 +183,7 @@ class SmartVentilationEnv(gym.Env):
             # --- EXPONENTIAL PENALTY ---
             # Steepness (k): Controls how fast the penalty grows.
             # k=5.0 means at 50% overflow (1.5 ratio), penalty is ~ -11.0
-            steepness = 5.0
+            steepness = 1.0
 
             # We subtract 1.0 so that at ratio=1.0, the penalty is exactly 0.0
             penalty = -(np.exp((ratio - 1.0) * steepness) - 1.0)
@@ -294,73 +297,102 @@ class SmartVentilationEnv(gym.Env):
 
         return observation, reward, terminated, truncated, info
 
-
 # =========================================================================
-# 2. RL Agent Training & Testing
+# Evaluation function
 # =========================================================================
 
-if __name__ == '__main__':
-    # Increase training time slightly to ensure it learns the new normalized state
-    TRAIN_STEPS = 144000
+def evaluate_model(model, env, label="Generic Model", print_step_logs=False):
+    """
+    Runs a single 24-hour episode (1440 steps) to evaluate the model.
 
-    env = SmartVentilationEnv()
-    model = DQN("MlpPolicy", env,
-                learning_rate=1e-3,
-                learning_starts=5000,
-                verbose=1,
-                seed=42)
+    Args:
+        model: The trained Stable Baselines3 model (or None for random agent).
+        env: The SmartVentilationEnv instance.
+        label (str): Name of the model for print output.
+        print_step_logs (bool): If True, prints hourly status updates.
 
-    print("--- Training with Normalized States ---")
-    model.learn(total_timesteps=TRAIN_STEPS)
+    Returns:
+        dict: A dictionary containing the final computed metrics.
+    """
+    print(f"\n[EVALUATION] Starting Evaluation for: {label}")
 
-    print("\n--- Evaluation ---")
-    test_env = SmartVentilationEnv()
-    obs, _ = test_env.reset()
+    obs, _ = env.reset()
 
-    # --- METRIC ACCUMULATORS ---
+    # --- Metric Accumulators ---
     metric_cumulative_reward = 0.0
     metric_tasvt_steps = 0  # Time Above Safe VOC Threshold
-    metric_total_co2 = 0.0  # For calculating Average CO2
-    metric_total_pm = 0.0  # For calculating Average PM2.5
+    metric_total_co2 = 0.0  # Sum for Average CO2
+    metric_total_pm = 0.0  # Sum for Average PM2.5
 
-    # Header for cleaner output
-    print(f"{'Step':<10} | {'Activity':<8} | {'Fan':<5} | {'VOC':<8} | {'PM2.5':<8} | {'CO2':<8} | {'Reward':<6}")
-    print("-" * 80)
+    # Optional: Header for logs
+    if print_step_logs:
+        print(f"{'Step':<10} | {'Activity':<8} | {'Fan':<5} | {'VOC':<8} | {'PM2.5':<8} | {'CO2':<8} | {'Reward':<6}")
+        print("-" * 80)
 
-    for step in range(test_env.MAX_STEPS):
-        action, _ = model.predict(obs, deterministic=True)
-        obs, reward, term, trunc, info = test_env.step(action.item())
+    for step in range(env.MAX_STEPS):
+        # Predict action
+        if model is not None:
+            action, _ = model.predict(obs, deterministic=True)
+            action = action.item()
+        else:
+            action = env.action_space.sample()  # Random action for baseline comparison
 
-        # --- UPDATE METRICS ---
-        # 1. Cumulative Reward
+        # Step environment
+        obs, reward, terminated, truncated, info = env.step(action)
+
+        # --- Update Metrics ---
         metric_cumulative_reward += reward
-
-        # 2. TASVT (Count steps where VOC > Safe Limit)
-        if info['voc'] > test_env.voc_safe:
-            metric_tasvt_steps += 1
-
-        # 3. Accumulate for Averages
         metric_total_co2 += info['co2']
         metric_total_pm += info['pm']
 
-        # Print logic (Hourly or active cooking)
-        should_print = (step % 60 == 0) or (info['activity'] != "none") or (test_env.fan_speed > 0)
-        if should_print:
-            print(f"{step:<10} | {info['activity']:<8} | {test_env.fan_speed:.2f}  | "
-                  f"{info['voc']:<8.1f} | {info['pm']:<8.1f} | {info['co2']:<8.0f} | {reward:.2f}")
+        # Check Safety Threshold (VOC > 500)
+        if info['voc'] > env.voc_safe:
+            metric_tasvt_steps += 1
 
-        if trunc: break
+        # --- Logging ---
+        if print_step_logs:
+            # Print every hour OR when fan is ON OR when Cooking
+            should_print = (step % 60 == 0) or (info['activity'] != "none") or (env.fan_speed > 0)
+            if should_print:
+                print(f"{step:<10} | {info['activity']:<8} | {env.fan_speed:.2f}  | "
+                      f"{info['voc']:<8.1f} | {info['pm']:<8.1f} | {info['co2']:<8.0f} | {reward:.2f}")
 
-    # --- FINAL CALCULATIONS ---
-    # Calculate averages by dividing total sum by total steps (T=1440)
-    avg_co2 = metric_total_co2 / test_env.MAX_STEPS
-    avg_pm = metric_total_pm / test_env.MAX_STEPS
+        if terminated or truncated:
+            break
 
-    print("-" * 80)
-    print("--- FINAL PERFORMANCE METRICS ---")
-    print(f"1. Cumulative Reward:               {metric_cumulative_reward:.2f}")
-    print(
-        f"2. TASVT (Unsafe VOC Steps):        {metric_tasvt_steps} steps ({(metric_tasvt_steps / test_env.MAX_STEPS) * 100:.1f}% of day)")
-    print(f"3. Average CO2 Concentration:       {avg_co2:.2f} ppm")
-    print(f"4. Average PM2.5 Concentration:     {avg_pm:.2f} µg/m³")
-    print("-" * 80)
+    # --- Final Calculations ---
+    avg_co2 = metric_total_co2 / env.MAX_STEPS
+    avg_pm = metric_total_pm / env.MAX_STEPS
+    tasvt_percentage = (metric_tasvt_steps / env.MAX_STEPS) * 100.0
+
+    # Print Summary Table
+    print("-" * 60)
+    print(f"--- FINAL RESULTS: {label} ---")
+    print(f"1. Cumulative Reward:           {metric_cumulative_reward:.2f}")
+    print(f"2. TASVT (Unsafe VOC Steps):    {metric_tasvt_steps} steps ({tasvt_percentage:.1f}%)")
+    print(f"3. Avg CO2 Concentration:       {avg_co2:.2f} ppm")
+    print(f"4. Avg PM2.5 Concentration:     {avg_pm:.2f} µg/m³")
+    print("-" * 60)
+
+    return {
+        "reward": metric_cumulative_reward,
+        "tasvt": metric_tasvt_steps,
+        "avg_co2": avg_co2,
+        "avg_pm": avg_pm
+    }
+
+# =========================================================================
+# Main Block
+# =========================================================================
+
+if __name__ == '__main__':
+    # 1. Setup Environment
+    env = SmartVentilationEnv()
+
+    # 2. Train Model (Experiment 1: Standard)
+    print("--- Training Standard Model ---")
+    model_std = DQN("MlpPolicy", env, verbose=0, seed=42)
+    model_std.learn(total_timesteps=144000)
+
+    # 3. Evaluate using our new function
+    results_std = evaluate_model(model_std, env, label="Standard DQN", print_step_logs=True)
