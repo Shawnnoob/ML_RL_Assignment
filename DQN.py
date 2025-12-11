@@ -3,6 +3,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium.spaces import Box, Discrete
 from stable_baselines3 import DQN
+import matplotlib.pyplot as plt
 
 # =========================================================================
 # Environment
@@ -301,85 +302,85 @@ class SmartVentilationEnv(gym.Env):
 # Evaluation function
 # =========================================================================
 
-def evaluate_model(model, env, label="Generic Model", print_step_logs=False):
+def evaluate_model(model, env, label="Generic Model", use_learned_policy=True, print_logs=False):
     """
-    Runs a single 24-hour episode (1440 steps) to evaluate the model.
+    Unified function for both Training Checks and Final Strategy Comparison.
 
     Args:
-        model: The trained Stable Baselines3 model (or None for random agent).
-        env: The SmartVentilationEnv instance.
-        label (str): Name of the model for print output.
-        print_step_logs (bool): If True, prints hourly status updates.
-
-    Returns:
-        dict: A dictionary containing the final computed metrics.
+        model: The Stable Baselines3 model.
+        env: The environment.
+        label: Name for the logs.
+        use_learned_policy (bool):
+            If True (Standard): Uses the trained brain (deterministic=True).
+            If False (Random): Forces exploration/randomness (deterministic=False).
     """
-    print(f"\n[EVALUATION] Starting Evaluation for: {label}")
+    if print_logs:
+        print(f"\n[EVALUATION] {label}...")
 
     obs, _ = env.reset()
 
-    # --- Metric Accumulators ---
-    metric_cumulative_reward = 0.0
-    metric_tasvt_steps = 0  # Time Above Safe VOC Threshold
-    metric_total_co2 = 0.0  # Sum for Average CO2
-    metric_total_pm = 0.0  # Sum for Average PM2.5
-
-    # Optional: Header for logs
-    if print_step_logs:
-        print(f"{'Step':<10} | {'Activity':<8} | {'Fan':<5} | {'VOC':<8} | {'PM2.5':<8} | {'CO2':<8} | {'Reward':<6}")
-        print("-" * 80)
+    # Metrics
+    cumulative_reward = 0.0
+    tasvt_steps = 0  # Time Above Safe VOC Threshold
+    total_co2 = 0.0
+    total_pm = 0.0
 
     for step in range(env.MAX_STEPS):
-        # Predict action
-        if model is not None:
-            action, _ = model.predict(obs, deterministic=True)
-            action = action.item()
-        else:
-            action = env.action_space.sample()  # Random action for baseline comparison
+        # UNIFIED PREDICTION LOGIC
+        # deterministic=True -> Use best learned action (Standard Strategy)
+        # deterministic=False -> Use epsilon/noise (Random Strategy)
+        action, _ = model.predict(obs, deterministic=use_learned_policy)
 
-        # Step environment
-        obs, reward, terminated, truncated, info = env.step(action)
+        obs, reward, term, trunc, info = env.step(action.item())
 
-        # --- Update Metrics ---
-        metric_cumulative_reward += reward
-        metric_total_co2 += info['co2']
-        metric_total_pm += info['pm']
+        cumulative_reward += reward
+        total_co2 += info['co2']
+        total_pm += info['pm']
 
-        # Check Safety Threshold (VOC > 500)
         if info['voc'] > env.voc_safe:
-            metric_tasvt_steps += 1
+            tasvt_steps += 1
 
-        # --- Logging ---
-        if print_step_logs:
-            # Print every hour OR when fan is ON OR when Cooking
-            should_print = (step % 60 == 0) or (info['activity'] != "none") or (env.fan_speed > 0)
-            if should_print:
-                print(f"{step:<10} | {info['activity']:<8} | {env.fan_speed:.2f}  | "
-                      f"{info['voc']:<8.1f} | {info['pm']:<8.1f} | {info['co2']:<8.0f} | {reward:.2f}")
+        if trunc: break
 
-        if terminated or truncated:
-            break
-
-    # --- Final Calculations ---
-    avg_co2 = metric_total_co2 / env.MAX_STEPS
-    avg_pm = metric_total_pm / env.MAX_STEPS
-    tasvt_percentage = (metric_tasvt_steps / env.MAX_STEPS) * 100.0
-
-    # Print Summary Table
-    print("-" * 60)
-    print(f"--- FINAL RESULTS: {label} ---")
-    print(f"1. Cumulative Reward:           {metric_cumulative_reward:.2f}")
-    print(f"2. TASVT (Unsafe VOC Steps):    {metric_tasvt_steps} steps ({tasvt_percentage:.1f}%)")
-    print(f"3. Avg CO2 Concentration:       {avg_co2:.2f} ppm")
-    print(f"4. Avg PM2.5 Concentration:     {avg_pm:.2f} µg/m³")
-    print("-" * 60)
-
-    return {
-        "reward": metric_cumulative_reward,
-        "tasvt": metric_tasvt_steps,
-        "avg_co2": avg_co2,
-        "avg_pm": avg_pm
+    # Calculate Averages
+    results = {
+        "Reward": cumulative_reward,
+        "TASVT": tasvt_steps,
+        "Avg_CO2": total_co2 / env.MAX_STEPS,
+        "Avg_PM": total_pm / env.MAX_STEPS
     }
+
+    if print_logs:
+        print(f"Result for {label}: Reward={results['Reward']:.2f}, Unsafe Steps={results['TASVT']}")
+
+    return results
+
+# =========================================================================
+# Plot function
+# =========================================================================
+def plot_and_save_curves(history_smart, history_random, metric_key, y_label, filename):
+    """
+    Plots a line graph comparing two strategies over training time and saves it.
+    """
+    plt.figure(figsize=(10, 6))
+
+    # Extract values from history dictionaries
+    y_smart = [h[metric_key] for h in history_smart]
+    y_random = [h[metric_key] for h in history_random]
+    x_steps = [h['step'] for h in history_smart]
+
+    plt.plot(x_steps, y_smart, label='Smart DQN', marker='o', color='blue', linewidth=2)
+    plt.plot(x_steps, y_random, label='Random Strategy', linestyle='--', color='orange', linewidth=2)
+
+    plt.title(f'{y_label} During Training', fontsize=16)
+    plt.xlabel('Training Steps', fontsize=12)
+    plt.ylabel(y_label, fontsize=12)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    plt.savefig(filename)
+    plt.close()
+    print(f"[INFO] Plot saved: {filename}")
 
 # =========================================================================
 # Main Block
@@ -398,90 +399,84 @@ if __name__ == '__main__':
     results_std = evaluate_model(model_std, env, label="Standard DQN", print_step_logs=True)
 '''
 # =========================================================================
-# 5. Comparing Strategies using ONLY DQN
+# Comparing Strategies using ONLY DQN
 # =========================================================================
 
 if __name__ == '__main__':
     env = SmartVentilationEnv()
-    TRAIN_STEPS = 144000
 
-    # -------------------------------------------------------
-    # Strategy A: Standard DQN (The "Smart" Agent)
-    # -------------------------------------------------------
-    # Starts random (1.0), decays to low randomness (0.05) to exploit learning.
-    print("--- Training Strategy A: Standard (Epsilon-Greedy) ---")
-    model_standard = DQN("MlpPolicy", env,
-                         exploration_fraction=0.5,
-                         exploration_initial_eps=1.0,
-                         exploration_final_eps=0.05,
-                         seed=42, verbose=0)
-    model_standard.learn(total_timesteps=TRAIN_STEPS)
+    # --- CONFIGURATION FOR DAYS ---
+    DAYS_TO_TRAIN = 500 # Cycles/Episodes
 
-    # -------------------------------------------------------
-    # Strategy B: Random Exploration (The "Baseline")
-    # -------------------------------------------------------
-    # We configure DQN to NEVER stop exploring. Epsilon stays at 1.0.
-    print("--- Training Strategy B: Pure Random (Baseline) ---")
-    model_random = DQN("MlpPolicy", env,
-                       exploration_initial_eps=1.0,
-                       exploration_final_eps=1.0,  # 100% Random forever
-                       seed=42, verbose=0)
-    # We "train" it just to keep the code consistent,
-    # but it technically just gathers random data.
-    model_random.learn(total_timesteps=TRAIN_STEPS)
+    TOTAL_TRAIN_STEPS = DAYS_TO_TRAIN * 1440
+    CYCLE_LENGTH = 1440  # 1 Day = 1440 minutes
 
+    # Configure how many days per record for plot
+    RECORD_INTERVAL = 25
 
-    # -------------------------------------------------------
-    # Evaluation Function
-    # -------------------------------------------------------
-    def evaluate_strategy(model, env, label, force_random=False):
-        print(f"\n[EVALUATION] {label}...")
-        obs, _ = env.reset()
-        cumulative_reward = 0.0
-        tasvt_steps = 0
-        total_co2 = 0.0
-        total_pm = 0.0
+    # Initialize models
+    model_smart = DQN("MlpPolicy", env, seed=42, verbose=0)
+    model_random = DQN("MlpPolicy", env, exploration_initial_eps=1.0, exploration_final_eps=1.0, seed=42, verbose=0)
 
-        for step in range(env.MAX_STEPS):
-            # CRITICAL: If force_random is True, we use deterministic=False
-            # This allows the model to use its internal epsilon (which is 1.0 for the random model)
-            if force_random:
-                action, _ = model.predict(obs, deterministic=False)
-            else:
-                action, _ = model.predict(obs, deterministic=True)  # Standard: Use best learned action
+    # History Storage
+    smart_history = []
+    random_history = []
 
-            obs, reward, term, trunc, info = env.step(action.item())
+    print(f"--- Starting Training for {DAYS_TO_TRAIN} Days ---")
+    print(f"--- Total Steps: {TOTAL_TRAIN_STEPS} ---")
+    print(f"--- Plotting every {RECORD_INTERVAL} Day(s) ---")
 
-            cumulative_reward += reward
-            total_co2 += info['co2']
-            total_pm += info['pm']
-            if info['voc'] > env.voc_safe:
-                tasvt_steps += 1
-            if trunc: break
+    # Calculate number of cycles (which is exactly equal to DAYS_TO_TRAIN)
+    num_cycles = TOTAL_TRAIN_STEPS // CYCLE_LENGTH
+    current_timesteps = 0
 
-        return {
-            "Reward": cumulative_reward,
-            "TASVT": tasvt_steps,
-            "Avg CO2": total_co2 / env.MAX_STEPS,
-            "Avg PM": total_pm / env.MAX_STEPS
-        }
+    for day in range(num_cycles):
+        # 1. Train for 1 Day (1440 steps)
+        # reset_num_timesteps=False ensures continuous learning across days
+        model_smart.learn(total_timesteps=CYCLE_LENGTH, reset_num_timesteps=False)
+        model_random.learn(total_timesteps=CYCLE_LENGTH, reset_num_timesteps=False)
 
+        current_timesteps += CYCLE_LENGTH
 
-    # -------------------------------------------------------
-    # Compare
-    # -------------------------------------------------------
-    # 1. Evaluate Standard (Deterministic = True, uses learned policy)
-    stats_std = evaluate_strategy(model_standard, env, "Standard DQN", force_random=False)
+        # 2. Check if we should record this day
+        # If RECORD_INTERVAL is 1, this runs every time.
+        if (day + 1) % RECORD_INTERVAL == 0:
+            print(f"Day {day + 1}/{DAYS_TO_TRAIN}: Evaluating...", end="")
 
-    # 2. Evaluate Random (Deterministic = False, uses epsilon=1.0)
-    stats_rnd = evaluate_strategy(model_random, env, "Random Strategy DQN", force_random=True)
+            # Evaluate
+            stats_smart = evaluate_model(model_smart, env, label="Smart", use_learned_policy=True, print_logs=False)
+            stats_random = evaluate_model(model_random, env, label="Random", use_learned_policy=False, print_logs=False)
 
-    # Print Results
-    print("\n" + "=" * 60)
-    print(f"{'Metric':<15} | {'Standard DQN':<15} | {'Random DQN':<15}")
-    print("-" * 60)
-    print(f"{'Reward':<15} | {stats_std['Reward']:<15.2f} | {stats_rnd['Reward']:<15.2f}")
-    print(f"{'TASVT Steps':<15} | {stats_std['TASVT']:<15} | {stats_rnd['TASVT']:<15}")
-    print(f"{'Avg CO2':<15} | {stats_std['Avg CO2']:<15.2f} | {stats_rnd['Avg CO2']:<15.2f}")
-    print(f"{'Avg PM':<15} | {stats_std['Avg PM']:<15.2f} | {stats_rnd['Avg PM']:<15.2f}")
-    print("=" * 60)
+            # Print short summary inline
+            print(f" [Smart Reward: {stats_smart['Reward']:.0f}]")
+
+            # Store Results
+            smart_history.append({"step": day + 1, **stats_smart})
+            random_history.append({"step": day + 1, **stats_random})
+
+    # =========================================================================
+    # Final Visualization & Saving
+    # =========================================================================
+    print("\n--- Generating and Saving Plots ---")
+
+    if smart_history:
+        # Plot Reward
+        plot_and_save_curves(
+            smart_history, random_history,
+            metric_key="Reward",
+            y_label="Cumulative Reward",
+            filename="training_reward_curve.png"
+        )
+
+        # Plot Safety
+        plot_and_save_curves(
+            smart_history, random_history,
+            metric_key="TASVT",
+            y_label="Unsafe Steps (TASVT)",
+            filename="training_safety_curve.png"
+        )
+
+        # Note: I changed the X-axis label in the plotting function to "Days" below
+        # for better readability, but the existing function works fine too.
+
+    print("[INFO] Done.")
