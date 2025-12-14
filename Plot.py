@@ -80,71 +80,70 @@ def plot_from_logs(log_filenames, metric_key="Reward", title=None, save_name=Non
 
 os.makedirs("plots", exist_ok=True)
 
-# EPSILON VS RANDOM
+# # --- DQN EPSILON VS RANDOM ---
+# my_logs = [
+#     "logs/log_Eps_Default.json",
+#     "logs/log_Eps_LrLow_GamLow.json",
+#     "logs/log_Eps_LrLow_GamHigh.json",
+#     "logs/log_Eps_LrHigh_GamLow.json",
+#     "logs/log_Eps_LrHigh_GamHigh.json",
+#     "logs/log_Rnd_Default.json"
+# ]
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="Reward",
+#     title="Epsilon DQN Reward Curve (Log Scale)",
+#     save_name="plots/Epsilon_DQN_Reward.png",
+#     use_symlog=True,
+#     symlog_scale=5000,
+#     y_axis_ticks=[-300000, -5000, -2500, 0, 1000, 2000, 3000, 4000, 5000]
+# )
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="TASVT",
+#     title="Epsilon DQN Unsafe VOC Minutes",
+#     save_name="plots/Epsilon_DQN_Unsafe.png",
+#     use_symlog=False
+# )
+#
+# # --- DQN ENTROPY VS RANDOM ---
+# my_logs = [
+#     "logs/log_Ent_Default.json",
+#     "logs/log_Ent_LrLow_GamLow.json",
+#     "logs/log_Ent_LrLow_GamHigh.json",
+#     "logs/log_Ent_LrHigh_GamLow.json",
+#     "logs/log_Ent_LrHigh_GamHigh.json",
+#     "logs/log_Rnd_Default.json"
+# ]
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="Reward",
+#     title="Entropy DQN Reward Curve (Log Scale)",
+#     save_name="plots/Entropy_DQN_Reward.png",
+#     use_symlog=True,
+#     symlog_scale=6000,
+#     y_axis_ticks=[-1400000, 0, 1000, 2000, 3000, 4000, 5000]
+# )
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="TASVT",
+#     title="Entropy DQN Unsafe VOC Minutes",
+#     save_name="plots/Entropy_DQN_Unsafe.png",
+#     use_symlog=False
+# )
+
+# --- DQN EPSILON VS ENTROPY ---
 my_logs = [
-    "logs/log_Eps_Default.json",
-    "logs/log_Eps_LrLow_GamLow.json",
     "logs/log_Eps_LrLow_GamHigh.json",
-    "logs/log_Eps_LrHigh_GamLow.json",
     "logs/log_Eps_LrHigh_GamHigh.json",
-    "logs/log_Rnd_Default.json"
-]
-
-plot_from_logs(
-    my_logs,
-    metric_key="Reward",
-    title="Epsilon DQN Reward Curve (Log Scale)",
-    save_name="plots/Epsilon_DQN_Reward.png",
-    use_symlog=True,
-    symlog_scale=5000,
-    y_axis_ticks=[-300000, -5000, -2500, 0, 1000, 2000, 3000, 4000, 5000]
-)
-
-plot_from_logs(
-    my_logs,
-    metric_key="TASVT",
-    title="Epsilon DQN Unsafe VOC Minutes",
-    save_name="plots/Epsilon_DQN_Unsafe.png",
-    use_symlog=False
-)
-
-# ENTROPY VS RANDOM
-my_logs = [
-    "logs/log_Ent_Default.json",
-    "logs/log_Ent_LrLow_GamLow.json",
-    "logs/log_Ent_LrLow_GamHigh.json",
-    "logs/log_Ent_LrHigh_GamLow.json",
+    #"logs/log_Ent_Default.json",
     "logs/log_Ent_LrHigh_GamHigh.json",
     "logs/log_Rnd_Default.json"
 ]
-
-plot_from_logs(
-    my_logs,
-    metric_key="Reward",
-    title="Entropy DQN Reward Curve (Log Scale)",
-    save_name="plots/Entropy_DQN_Reward.png",
-    use_symlog=True,
-    symlog_scale=6000,
-    y_axis_ticks=[-1400000, 0, 1000, 2000, 3000, 4000, 5000]
-)
-
-plot_from_logs(
-    my_logs,
-    metric_key="TASVT",
-    title="Entropy DQN Unsafe VOC Minutes",
-    save_name="plots/Entropy_DQN_Unsafe.png",
-    use_symlog=False
-)
-
-# EPSILON VS ENTROPY
-my_logs = [
-    "logs/log_Eps_LrLow_GamHigh.json",
-    "logs/log_Eps_LrHigh_GamHigh.json",
-    "logs/log_Ent_Default.json",
-    "logs/log_Ent_LrHigh_GamHigh.json"
-]
-
-os.makedirs("plots", exist_ok=True)
 
 plot_from_logs(
     my_logs,
@@ -163,3 +162,132 @@ plot_from_logs(
     save_name="plots/Summary_DQN_Unsafe.png",
     use_symlog=False
 )
+
+# # --- DQN Pure Random ---
+# my_logs = [
+#     "logs/log_Rnd_Default.json"
+# ]
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="Reward",
+#     title="Random DQN Reward Curve",
+#     save_name="plots/Random_DQN_Reward.png",
+#     use_symlog=True,
+#     symlog_scale=5000,
+#     y_axis_ticks=[0, 1000, 2000, 3000, 4000, 5000]
+# )
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="TASVT",
+#     title="Random DQN Unsafe VOC Minutes",
+#     save_name="plots/Random_DQN_Unsafe.png",
+#     use_symlog=False
+# )
+#
+# # --- DDQN EPSILON VS RANDOM ---
+# my_logs = [
+#     "logs/log_DDQN_Eps_Default.json",
+#     "logs/log_DDQN_Eps_LrLow_GamLow.json",
+#     "logs/log_DDQN_Eps_LrLow_GamHigh.json",
+#     "logs/log_DDQN_Eps_LrHigh_GamLow.json",
+#     "logs/log_DDQN_Eps_LrHigh_GamHigh.json",
+#     "logs/log_DDQN_Rnd_Default.json"
+# ]
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="Reward",
+#     title="Epsilon DDQN Reward Curve (Log Scale)",
+#     save_name="plots/Epsilon_DDQN_Reward.png",
+#     use_symlog=True,
+#     symlog_scale=5000,
+#     y_axis_ticks=[-300000, -5000, -2500, 0, 1000, 2000, 3000, 4000, 5000]
+# )
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="TASVT",
+#     title="Epsilon DDQN Unsafe VOC Minutes",
+#     save_name="plots/Epsilon_DDQN_Unsafe.png",
+#     use_symlog=False
+# )
+#
+# # --- DDQN ENTROPY VS RANDOM ---
+# my_logs = [
+#     "logs/log_DDQN_Ent_Default.json",
+#     "logs/log_DDQN_Ent_LrLow_GamLow.json",
+#     "logs/log_DDQN_Ent_LrLow_GamHigh.json",
+#     "logs/log_DDQN_Ent_LrHigh_GamLow.json",
+#     "logs/log_DDQN_Ent_LrHigh_GamHigh.json",
+#     "logs/log_DDQN_Rnd_Default.json"
+# ]
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="Reward",
+#     title="Entropy DDQN Reward Curve (Log Scale)",
+#     save_name="plots/Entropy_DDQN_Reward.png",
+#     use_symlog=True,
+#     symlog_scale=6000,
+#     y_axis_ticks=[-1400000, 0, 1000, 2000, 3000, 4000, 5000]
+# )
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="TASVT",
+#     title="Entropy DDQN Unsafe VOC Minutes",
+#     save_name="plots/Entropy_DDQN_Unsafe.png",
+#     use_symlog=False
+# )
+
+# --- DDQN EPSILON VS ENTROPY ---
+my_logs = [
+    "logs/log_DDQN_Eps_LrLow_GamHigh.json",
+    "logs/log_DDQN_Eps_LrHigh_GamHigh.json",
+    "logs/log_DDQN_Ent_Default.json",
+    "logs/log_DDQN_Ent_LrHigh_GamHigh.json",
+    "logs/log_DDQN_Rnd_Default.json"
+]
+
+plot_from_logs(
+    my_logs,
+    metric_key="Reward",
+    title="Summary DDQN Reward Curve (Log Scale)",
+    save_name="plots/Summary_DDQN_Reward.png",
+    use_symlog=True,
+    symlog_scale=6000,
+    y_axis_ticks=[1000, 2000, 3000, 4000, 5000, 5500]
+)
+
+plot_from_logs(
+    my_logs,
+    metric_key="TASVT",
+    title="Summary DDQN Unsafe VOC Minutes",
+    save_name="plots/Summary_DDQN_Unsafe.png",
+    use_symlog=False
+)
+
+# # --- DDQN Pure Random ---
+# my_logs = [
+#     "logs/log_DDQN_Rnd_Default.json"
+# ]
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="Reward",
+#     title="Random DDQN Reward Curve",
+#     save_name="plots/Random_DDQN_Reward.png",
+#     use_symlog=True,
+#     symlog_scale=5000,
+#     y_axis_ticks=[0, 1000, 2000, 3000, 4000, 5000]
+# )
+#
+# plot_from_logs(
+#     my_logs,
+#     metric_key="TASVT",
+#     title="Random DDQN Unsafe VOC Minutes",
+#     save_name="plots/Random_DDQN_Unsafe.png",
+#     use_symlog=False
+# )

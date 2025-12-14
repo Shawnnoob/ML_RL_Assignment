@@ -2,6 +2,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium.spaces import Box, Discrete
 from stable_baselines3 import DQN
+from stable_baselines3.common.utils import polyak_update
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import torch
@@ -330,6 +331,89 @@ class BoltzmannDQN(DQN):
 
         return np.array(actions), np.array(actions)
 
+class DoubleDQN(DQN):
+    """
+    Implements Double DQN by overriding the train_step method.
+    Target = R + gamma * Q_target(s', argmax_a Q_online(s', a))
+    """
+    def train_step(self, batch_size: int, gradient_steps: int):
+        # Switch to train mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(True)
+        # Update learning rate according to schedule
+        self._update_learning_rate(self.policy.optimizer)
+
+        losses = []
+        for _ in range(gradient_steps):
+            # Sample replay buffer
+            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
+
+            with torch.no_grad():
+                # --- DDQN LOGIC STARTS HERE ---
+                # 1. Use ONLINE network to select best action for next state
+                next_q_values_online = self.q_net(replay_data.next_observations)
+                next_actions_online = next_q_values_online.argmax(dim=1)
+
+                # 2. Use TARGET network to evaluate the value of that action
+                next_q_values_target = self.q_net_target(replay_data.next_observations)
+                # Gather the Q-values corresponding to the selected actions
+                next_q_values = torch.gather(next_q_values_target, dim=1, index=next_actions_online.unsqueeze(1))
+
+                # 3. Compute the target Q-value
+                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                # --- DDQN LOGIC ENDS HERE ---
+
+            # Get current Q-values estimates
+            current_q_values = self.q_net(replay_data.observations)
+
+            # Retrieve the q-values for the actions from the replay buffer
+            current_q_values = torch.gather(current_q_values, dim=1, index=replay_data.actions.long())
+
+            # Compute Huber loss (smooth L1 loss)
+            loss = F.smooth_l1_loss(current_q_values, target_q_values)
+            losses.append(loss.item())
+
+            # Optimize the policy
+            self.policy.optimizer.zero_grad()
+            loss.backward()
+            # Clip gradient norm
+            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            self.policy.optimizer.step()
+
+        # Increase update counter
+        self._n_updates += gradient_steps
+
+        # Polyak update for target network
+        polyak_update(self.q_net.parameters(), self.q_net_target.parameters(), self.tau)
+
+
+class BoltzmannDoubleDQN(DoubleDQN):
+    """
+    Combines Double DQN with Boltzmann Exploration.
+    """
+
+    def __init__(self, *args, temperature=1.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.temperature = temperature
+
+    def _sample_action(self, learning_starts: int, action_noise=None, n_envs: int = 1):
+        # 1. Random Warmup
+        if self.num_timesteps < learning_starts and not (self.use_sde and self.use_sde_at_warmup):
+            unscaled_action = np.array([self.action_space.sample() for _ in range(n_envs)])
+            return unscaled_action, unscaled_action
+
+        # 2. Get Q-Values
+        with torch.no_grad():
+            obs_tensor = self.policy.obs_to_tensor(self._last_obs)[0]
+            q_values = self.policy.q_net(obs_tensor)
+
+        # 3. Apply Boltzmann (Entropy) Logic
+        # Probs = exp(Q / T) / sum(exp(Q / T))
+        probs = F.softmax(q_values / self.temperature, dim=1).cpu().numpy()
+
+        # 4. Sample
+        actions = [np.random.choice(self.action_space.n, p=probs[i]) for i in range(n_envs)]
+        return np.array(actions), np.array(actions)
+
 
 def evaluate_model(model, env, label="Model", print_logs=False):
     # Evaluates on a FIXED Benchmark (Seed 42) for fair comparison
@@ -340,7 +424,7 @@ def evaluate_model(model, env, label="Model", print_logs=False):
     total_co2 = 0.0
     total_pm = 0.0
 
-    is_random = "Random" in label
+    is_random = ("Random" in label) or ("Rnd" in label)
     deterministic = not is_random
 
     for _ in range(env.MAX_STEPS):
@@ -363,7 +447,7 @@ def evaluate_model(model, env, label="Model", print_logs=False):
     return {"Reward": cumulative_reward, "TASVT": tasvt_steps, "Avg_CO2": avg_co2, "Avg_PM": avg_pm}
 
 
-def debug_evaluate_model(model, env, seed=42):
+def debug_evaluate_model(model, env, seed=42, not_random_model=True):
     """
     Prints step-by-step logs including instantaneous Step Reward and Cumulative Reward.
     """
@@ -380,7 +464,7 @@ def debug_evaluate_model(model, env, seed=42):
     cumulative_reward = 0.0
 
     while True:
-        action, _ = model.predict(obs, deterministic=True)
+        action, _ = model.predict(obs, deterministic=not_random_model)
 
         # 2. Capture the single-step reward
         obs, reward, _, truncated, info = env.step(action.item())
@@ -416,7 +500,7 @@ def run_experiment(config, env_train, env_eval, total_steps, eval_freq):
         env_train,
         learning_rate=config["lr"],
         gamma=config["gamma"],
-        seed=42,
+        seed=config.get("seed", 42),
         verbose=0,
         **config["kwargs"]
     )
@@ -451,79 +535,6 @@ def run_experiment(config, env_train, env_eval, total_steps, eval_freq):
     return history, model
 
 
-def plot_from_logs(log_filenames, metric_key="Reward", title=None, save_name=None,
-                   use_symlog=False, symlog_scale=5000, y_axis_ticks=None):
-    """
-    Args:
-        use_symlog (bool): If True, applies symmetric log scaling to handle massive negative drops.
-    """
-    fig, ax = plt.subplots(figsize=(12, 7))
-
-    # Formatting
-    markers = ['o', 's', '^', 'D', 'v', '<', '>']
-    linestyles = ['-', '--', '-.', ':']
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-
-    found_any = False
-
-    for i, filename in enumerate(log_filenames):
-        if not os.path.exists(filename):
-            print(f"[WARN] File not found: {filename}")
-            continue
-
-        found_any = True
-        with open(filename, 'r') as f:
-            history = json.load(f)
-
-        # 1440 minutes = 1 Day
-        steps = [entry['step'] for entry in history]
-        days = [step / 1440.0 for step in steps]
-
-        values = [entry[metric_key] for entry in history]
-
-        clean_label = filename.replace("log_", "").replace(".json", "")
-
-        # Plot using 'days' on X-axis instead of 'steps'
-        ax.plot(days, values, label=clean_label,
-                marker=markers[i % len(markers)],
-                linestyle=linestyles[i % len(linestyles)],
-                color=colors[i % len(colors)],
-                linewidth=2, markersize=5, alpha=0.8)
-
-    if not found_any: return
-
-    # --- THE SCALING FIX ---
-    if use_symlog:
-        # 1. Enable Symlog
-        ax.set_yscale('symlog', linthresh=symlog_scale)
-
-        # 2. Force Readable Labels (No 10^x scientific notation)
-        # This forces the axis to use plain numbers (e.g. 5000, -100000)
-        ax.yaxis.set_major_formatter(ticker.ScalarFormatter())
-        ax.yaxis.get_major_formatter().set_scientific(False)  # Turn off 1e6 notation
-        ax.yaxis.get_major_formatter().set_useOffset(False)
-
-        # 3. Manually set ticks if auto-detection fails
-        # Uncomment this only if the axis is still blank
-        if y_axis_ticks is not None:
-            # y_axis_ticks = [int(tick) for tick in y_axis_ticks]
-            ax.set_yticks(y_axis_ticks)
-
-    ax.grid(True, which='both', linestyle='--', linewidth=0.5, alpha=0.5)
-
-    final_title = title if title else f"Comparison: {metric_key}"
-    plt.title(final_title, fontsize=16)
-    plt.xlabel("Training Days", fontsize=12)
-    plt.ylabel(metric_key, fontsize=12)
-    plt.legend(fontsize=10, loc='best')
-
-    if save_name:
-        plt.savefig(save_name, dpi=300, bbox_inches='tight')
-        print(f"[INFO] Plot saved to {save_name}")
-
-    plt.show()
-
-
 if __name__ == "__main__":
     # Create TWO Separate Environments
     env_train = SmartVentilationEnv()
@@ -540,118 +551,67 @@ if __name__ == "__main__":
     GAM_DEF, GAM_LOW, GAM_HIGH = 0.99, 0.90, 0.999  # Discount factor
 
     configs = [
-        # --- 1. Epsilon Greedy (Standard DQN) ---
-        {"name": "Eps_Default", "class": DQN, "lr": LR_DEF, "gamma": GAM_DEF,
-         "kwargs": {"exploration_fraction": 0.5}},
-        {"name": "Eps_LrLow_GamLow", "class": DQN, "lr": LR_LOW, "gamma": GAM_LOW,
-         "kwargs": {"exploration_fraction": 0.5}},
-        {"name": "Eps_LrLow_GamHigh", "class": DQN, "lr": LR_LOW, "gamma": GAM_HIGH,
-         "kwargs": {"exploration_fraction": 0.5}},
-        {"name": "Eps_LrHigh_GamLow", "class": DQN, "lr": LR_HIGH, "gamma": GAM_LOW,
-         "kwargs": {"exploration_fraction": 0.5}},
-        {"name": "Eps_LrHigh_GamHigh", "class": DQN, "lr": LR_HIGH, "gamma": GAM_HIGH,
-         "kwargs": {"exploration_fraction": 0.5}},
+        # --- 1.1 Epsilon Greedy (Standard DQN) ---
+        # {"name": "Eps_Default", "class": DQN, "lr": LR_DEF, "gamma": GAM_DEF,
+        #  "kwargs": {"exploration_fraction": 0.5}},
+        # {"name": "Eps_LrLow_GamLow", "class": DQN, "lr": LR_LOW, "gamma": GAM_LOW,
+        #  "kwargs": {"exploration_fraction": 0.5}},
+        # {"name": "Eps_LrLow_GamHigh", "class": DQN, "lr": LR_LOW, "gamma": GAM_HIGH,
+        #  "kwargs": {"exploration_fraction": 0.5}},
+        # {"name": "Eps_LrHigh_GamLow", "class": DQN, "lr": LR_HIGH, "gamma": GAM_LOW,
+        #  "kwargs": {"exploration_fraction": 0.5}},
+        # {"name": "Eps_LrHigh_GamHigh", "class": DQN, "lr": LR_HIGH, "gamma": GAM_HIGH,
+        #  "kwargs": {"exploration_fraction": 0.5}},
 
-        # --- 2. Random Exploration (Baseline) ---
+        # --- 1.2 Random Exploration (Baseline DQN) ---
         # Fixed epsilon = 1.0 means pure random
         {"name": "Rnd_Default", "class": DQN, "lr": LR_DEF, "gamma": GAM_DEF,
          "kwargs": {"exploration_initial_eps": 1.0, "exploration_final_eps": 1.0}},
 
-        # --- 3. Entropy-Based (Boltzmann DQN) ---
+        # --- 1.3 Entropy-Based (Boltzmann DQN) ---
         # Uses our custom class
+        # {"name": "Ent_Default", "class": BoltzmannDQN, "lr": LR_DEF, "gamma": GAM_DEF,
+        #  "kwargs": {"temperature": 1.0}},
+        # {"name": "Ent_LrLow_GamLow", "class": BoltzmannDQN, "lr": LR_LOW, "gamma": GAM_LOW,
+        #  "kwargs": {"temperature": 1.0}},
+        # {"name": "Ent_LrLow_GamHigh", "class": BoltzmannDQN, "lr": LR_LOW, "gamma": GAM_HIGH,
+        #  "kwargs": {"temperature": 1.0}},
+        # {"name": "Ent_LrHigh_GamLow", "class": BoltzmannDQN, "lr": LR_HIGH, "gamma": GAM_LOW,
+        #  "kwargs": {"temperature": 1.0}},
+        # {"name": "Ent_LrHigh_GamHigh", "class": BoltzmannDQN, "lr": LR_HIGH, "gamma": GAM_HIGH,
+        #  "kwargs": {"temperature": 1.0}},
 
-        {"name": "Ent_Default", "class": BoltzmannDQN, "lr": LR_DEF, "gamma": GAM_DEF, "kwargs": {"temperature": 1.0}},
-        {"name": "Ent_LrLow_GamLow", "class": BoltzmannDQN, "lr": LR_LOW, "gamma": GAM_LOW,
-         "kwargs": {"temperature": 1.0}},
-        {"name": "Ent_LrLow_GamHigh", "class": BoltzmannDQN, "lr": LR_LOW, "gamma": GAM_HIGH,
-         "kwargs": {"temperature": 1.0}},
-        {"name": "Ent_LrHigh_GamLow", "class": BoltzmannDQN, "lr": LR_HIGH, "gamma": GAM_LOW,
-         "kwargs": {"temperature": 1.0}},
-        {"name": "Ent_LrHigh_GamHigh", "class": BoltzmannDQN, "lr": LR_HIGH, "gamma": GAM_HIGH,
-         "kwargs": {"temperature": 1.0}},
+        # --- 2.1 Epsilon Greedy (Standard DDQN) ---
+        # {"name": "DDQN_Eps_Default", "class": DoubleDQN, "lr": LR_DEF, "gamma": GAM_DEF, "seed": 50,
+        #  "kwargs": {"exploration_fraction": 0.5}},
+        # {"name": "DDQN_Eps_LrLow_GamLow", "class": DoubleDQN, "lr": LR_LOW, "gamma": GAM_LOW, "seed": 50,
+        #  "kwargs": {"exploration_fraction": 0.5}},
+        # {"name": "DDQN_Eps_LrLow_GamHigh", "class": DoubleDQN, "lr": LR_LOW, "gamma": GAM_HIGH, "seed": 50,
+        #  "kwargs": {"exploration_fraction": 0.5}},
+        # {"name": "DDQN_Eps_LrHigh_GamLow", "class": DoubleDQN, "lr": LR_HIGH, "gamma": GAM_LOW, "seed": 50,
+        #  "kwargs": {"exploration_fraction": 0.5}},
+        # {"name": "DDQN_Eps_LrHigh_GamHigh", "class": DoubleDQN, "lr": LR_HIGH, "gamma": GAM_HIGH, "seed": 50,
+        #  "kwargs": {"exploration_fraction": 0.5}},
+
+        # --- 2.2 Random Exploration (Baseline DDQN) ---
+        # {"name": "DDQN_Rnd_Default", "class": DoubleDQN, "lr": LR_DEF, "gamma": GAM_DEF, "seed": 50,
+        #  "kwargs": {"exploration_initial_eps": 1.0, "exploration_final_eps": 1.0}},
+
+        # --- 2.3 Entropy-Based (Boltzmann DDQN) ---
+        # Uses our custom class
+        # {"name": "DDQN_Ent_Default", "class": BoltzmannDoubleDQN, "lr": LR_DEF, "gamma": GAM_DEF, "seed": 50,
+        #  "kwargs": {"temperature": 1.0}},
+        # {"name": "DDQN_Ent_LrLow_GamLow", "class": BoltzmannDoubleDQN, "lr": LR_LOW, "gamma": GAM_LOW, "seed": 50,
+        #  "kwargs": {"temperature": 1.0}},
+        # {"name": "DDQN_Ent_LrLow_GamHigh", "class": BoltzmannDoubleDQN, "lr": LR_LOW, "gamma": GAM_HIGH, "seed": 50,
+        #  "kwargs": {"temperature": 1.0}},
+        # {"name": "DDQN_Ent_LrHigh_GamLow", "class": BoltzmannDoubleDQN, "lr": LR_HIGH, "gamma": GAM_LOW, "seed": 50,
+        #  "kwargs": {"temperature": 1.0}},
+        # {"name": "DDQN_Ent_LrHigh_GamHigh", "class": BoltzmannDoubleDQN, "lr": LR_HIGH, "gamma": GAM_HIGH, "seed": 50,
+        #  "kwargs": {"temperature": 1.0}},
 
     ]
 
-    all_results = {}
-
-    # C. Run Loop
+    # Train each model in configs
     for config in configs:
-        history, model = run_experiment(config, env_train, env_eval, TOTAL_STEPS, EVAL_FREQ)
-        all_results[config["name"]] = history
-
-    os.makedirs("plots", exist_ok=True)
-
-    # my_logs = [
-    #     "logs/log_Eps_Default.json",
-    #     "logs/log_Eps_LrHigh_GamHigh.json",
-    #     "logs/log_Eps_LrLow_GamLow.json",
-    #     "logs/log_Rnd_Default.json"
-    # ]
-    #
-    # plot_from_logs(
-    #     my_logs,
-    #     metric_key="Reward",
-    #     title="Epsilon DQN Reward Curve (Log Scale)",
-    #     save_name="plots/Epsilon_DQN_Reward.png",
-    #     use_symlog=True,
-    #     symlog_scale=5000,
-    #     y_axis_ticks=[-3000, -2000, -1000, 0, 1000, 2000, 3000, 4000, 5000]
-    # )
-    #
-    # plot_from_logs(
-    #     my_logs,
-    #     metric_key="TASVT",
-    #     title="Epsilon DQN Unsafe Minutes",
-    #     save_name="plots/Epsilon_DQN_Unsafe.png",
-    #     use_symlog=False
-    # )
-    #
-    # my_logs = [
-    #     "logs/log_Ent_Default.json",
-    #     "logs/log_Ent_LrHigh_GamHigh.json",
-    #     "logs/log_Ent_LrLow_GamLow.json",
-    #     "logs/log_Rnd_Default.json"
-    # ]
-    #
-    # plot_from_logs(
-    #     my_logs,
-    #     metric_key="Reward",
-    #     title="Entropy DQN Reward Curve (Log Scale)",
-    #     save_name="plots/Entropy_DQN_Reward.png",
-    #     use_symlog=True,
-    #     symlog_scale=6000,
-    #     y_axis_ticks=[-1350000, 0, 1000, 2000, 3000, 4000, 5000]
-    # )
-    #
-    # plot_from_logs(
-    #     my_logs,
-    #     metric_key="TASVT",
-    #     title="Entropy DQN Unsafe Minutes",
-    #     save_name="plots/Entropy_DQN_Unsafe.png",
-    #     use_symlog=False
-    # )
-    #
-    # my_logs = [
-    #     "logs/log_Eps_Default.json",
-    #     "logs/log_Eps_LrHigh_GamHigh.json",
-    #     "logs/log_Ent_Default.json",
-    #     "logs/log_Ent_LrHigh_GamHigh.json"
-    # ]
-    #
-    # plot_from_logs(
-    #     my_logs,
-    #     metric_key="Reward",
-    #     title="Summary DQN Reward Curve (Log Scale)",
-    #     save_name="plots/Summary_DQN_Reward.png",
-    #     use_symlog=True,
-    #     symlog_scale=6000,
-    #     y_axis_ticks=[1000, 2000, 3000, 4000, 5000, 5500]
-    # )
-    #
-    # plot_from_logs(
-    #     my_logs,
-    #     metric_key="TASVT",
-    #     title="Summary DQN Unsafe Minutes",
-    #     save_name="plots/Summary_DQN_Unsafe.png",
-    #     use_symlog=False
-    # )
+        run_experiment(config, env_train, env_eval, TOTAL_STEPS, EVAL_FREQ)
